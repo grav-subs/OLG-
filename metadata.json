@@ -1,0 +1,8 @@
+{
+  "name": "OLG",
+  "description": "A professional-grade digital drawing and sketching tool featuring a solid, high-fidelity uniform brush stroke with vector geometry and precision grid snapping.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
