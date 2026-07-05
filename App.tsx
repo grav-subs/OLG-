@@ -13,6 +13,8 @@ function App() {
   const [undoTrigger, setUndoTrigger] = useState(false);
   const [redoTrigger, setRedoTrigger] = useState(false);
   const [deleteTrigger, setDeleteTrigger] = useState(false);
+  const [copyTrigger, setCopyTrigger] = useState(false);
+  const [pasteTrigger, setPasteTrigger] = useState(false);
   const [finishPathTrigger, setFinishPathTrigger] = useState(false);
   const [shapePreviewTrigger, setShapePreviewTrigger] = useState<{ simplify: number; smooth: number } | null>(null);
   const [shapeCommitTrigger, setShapeCommitTrigger] = useState(false);
@@ -144,6 +146,16 @@ function App() {
       else if ((e.ctrlKey || e.metaKey) && key === 'a') {
         e.preventDefault();
       }
+      // Ctrl+C / Cmd+C (Copy selected stroke)
+      else if ((e.ctrlKey || e.metaKey) && key === 'c') {
+        e.preventDefault();
+        setCopyTrigger(true);
+      }
+      // Ctrl+V / Cmd+V (Paste as a duplicate)
+      else if ((e.ctrlKey || e.metaKey) && key === 'v') {
+        e.preventDefault();
+        setPasteTrigger(true);
+      }
       // Delete or Backspace to delete selected stroke
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (dial.values.tool === 'select') {
@@ -219,6 +231,10 @@ function App() {
         setRedoTrigger={setRedoTrigger}
         deleteTrigger={deleteTrigger}
         setDeleteTrigger={setDeleteTrigger}
+        copyTrigger={copyTrigger}
+        setCopyTrigger={setCopyTrigger}
+        pasteTrigger={pasteTrigger}
+        setPasteTrigger={setPasteTrigger}
         finishPathTrigger={finishPathTrigger}
         setFinishPathTrigger={setFinishPathTrigger}
         shapePreviewTrigger={shapePreviewTrigger}

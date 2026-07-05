@@ -348,6 +348,10 @@ interface CalligraphyCanvasProps {
   setRedoTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   deleteTrigger: boolean;
   setDeleteTrigger: React.Dispatch<React.SetStateAction<boolean>>;
+  copyTrigger: boolean;
+  setCopyTrigger: React.Dispatch<React.SetStateAction<boolean>>;
+  pasteTrigger: boolean;
+  setPasteTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   finishPathTrigger: boolean;
   setFinishPathTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   shapePreviewTrigger: { simplify: number; smooth: number } | null;
@@ -377,6 +381,10 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
   setRedoTrigger,
   deleteTrigger,
   setDeleteTrigger,
+  copyTrigger,
+  setCopyTrigger,
+  pasteTrigger,
+  setPasteTrigger,
   finishPathTrigger,
   setFinishPathTrigger,
   shapePreviewTrigger,
@@ -417,6 +425,10 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       // stroke is now selected, instead of leaving them at whatever a previously selected
       // stroke was left at.
       let lastNotifiedStrokeId: string | null | undefined = undefined;
+
+      // Copy/paste clipboard — holds a deep copy of the last-copied selection (one or more strokes)
+      let clipboard: VectorStroke[] = [];
+      let pasteOffsetCount = 0;
 
       // Anchors popped off an in-progress bezier path by undo, so redo can restore them
       // one at a time. A whole in-progress path is never a single undo step — undo/redo
@@ -471,6 +483,30 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       let selectedAnchors: SelectedAnchor[] = [];
       let marqueeStart: p5.Vector | null = null;
       let isMarqueeDragging = false;
+
+      // Multi-shape selection (shift-click or marquee-drag over empty space). `selectedStroke`
+      // remains the "primary" shape — the one whose anchors/rotate handle/Simplify & Smooth
+      // amounts show, since those stay single-shape-only by design. `selectedStrokes` is the
+      // full set that Copy, Delete, and dragging-to-move act on together.
+      let selectedStrokes: VectorStroke[] = [];
+
+      const isStrokeSelected = (id: string): boolean => selectedStrokes.some(s => s.id === id);
+
+      const setSingleSelection = (stroke: VectorStroke | null) => {
+        selectedStroke = stroke;
+        selectedStrokes = stroke ? [stroke] : [];
+      };
+
+      const toggleStrokeSelection = (stroke: VectorStroke) => {
+        const idx = selectedStrokes.findIndex(s => s.id === stroke.id);
+        if (idx !== -1) {
+          selectedStrokes.splice(idx, 1);
+          selectedStroke = selectedStrokes.length > 0 ? selectedStrokes[selectedStrokes.length - 1] : null;
+        } else {
+          selectedStrokes.push(stroke);
+          selectedStroke = stroke;
+        }
+      };
 
       // Canvas pan (Move/Hand tool) state
       let panX = 0;
@@ -742,7 +778,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         // Draw all completed strokes
         for (const stroke of strokes) {
           if (stroke.isVisible === false) continue;
-          const isSelected = selectedStroke && selectedStroke.id === stroke.id;
+          const isSelected = isStrokeSelected(stroke.id);
           const isHovered = hoveredStroke && hoveredStroke.id === stroke.id;
 
           p.push();
@@ -988,8 +1024,9 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         }
 
         // Draw the rotate handle for the selected (already-committed) stroke — only in
-        // Direct Select mode, never while still placing a bezier path
-        if (tool === 'select' && selectedStroke && selectedStroke.tool === 'bezier' && selectedStroke.anchors && selectedStroke.anchors.length > 0) {
+        // Direct Select mode, never while still placing a bezier path, and only when a
+        // single shape is selected (rotate is single-shape-only by design)
+        if (tool === 'select' && selectedStrokes.length === 1 && selectedStroke && selectedStroke.tool === 'bezier' && selectedStroke.anchors && selectedStroke.anchors.length > 0) {
           const bounds = getStrokeBounds(selectedStroke);
           const handlePos = getRotateHandlePos(selectedStroke, zoom);
           if (bounds && handlePos) {
@@ -1158,8 +1195,9 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
             }
           }
 
-          // 2. Second priority: Check if we clicked on any anchor or control point of the currently selectedStroke
-          if (selectedStroke && !selectedStroke.isLocked && selectedStroke.isVisible !== false && selectedStroke.tool === 'bezier' && selectedStroke.anchors) {
+          // 2. Second priority: Check if we clicked on any anchor or control point of the currently
+          // selectedStroke (single-shape only — skip while multiple shapes are selected as a group)
+          if (selectedStrokes.length <= 1 && selectedStroke && !selectedStroke.isLocked && selectedStroke.isVisible !== false && selectedStroke.tool === 'bezier' && selectedStroke.anchors) {
             for (let i = 0; i < selectedStroke.anchors.length; i++) {
               const anchor = selectedStroke.anchors[i];
               const distAnchor = p.dist(mx, my, anchor.p.x, anchor.p.y);
@@ -1195,7 +1233,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
                 const anchor = stroke.anchors[i];
                 const distAnchor = p.dist(mx, my, anchor.p.x, anchor.p.y);
                 if (distAnchor < 16 / zoom) {
-                  selectedStroke = stroke;
+                  setSingleSelection(stroke);
                   handleAnchorClick(stroke.id, i);
                   draggingItem = { strokeId: stroke.id, type: 'anchor', index: i };
                   prevMouse = p.createVector(mx, my);
@@ -1206,8 +1244,9 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           }
         }
 
-        // Rotate handle: takes priority over re-picking/dragging the selected stroke
-        if (tool === 'select' && selectedStroke && !selectedStroke.isLocked && selectedStroke.tool === 'bezier' && selectedStroke.anchors && selectedStroke.anchors.length > 0) {
+        // Rotate handle: takes priority over re-picking/dragging the selected stroke.
+        // Single-shape only, matching the render guard above.
+        if (tool === 'select' && selectedStrokes.length === 1 && selectedStroke && !selectedStroke.isLocked && selectedStroke.tool === 'bezier' && selectedStroke.anchors && selectedStroke.anchors.length > 0) {
           const handlePos = getRotateHandlePos(selectedStroke, zoom);
           const bounds = getStrokeBounds(selectedStroke);
           if (handlePos && bounds && p.dist(mx, my, handlePos.x, handlePos.y) < 16 / zoom) {
@@ -1225,18 +1264,25 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         if (tool === 'select') {
           const hit = getStrokeUnderMouse(mx, my);
           if (hit) {
-            selectedStroke = hit;
-            // Clear prior selected anchors unless Shift is held down
-            if (!p.keyIsDown(p.SHIFT)) {
+            if (p.keyIsDown(p.SHIFT)) {
+              // Shift-click adds/removes this shape from the multi-selection
+              toggleStrokeSelection(hit);
+            } else if (isStrokeSelected(hit.id) && selectedStrokes.length > 1) {
+              // Clicking a shape that's already part of a multi-selection keeps the whole
+              // group selected, so dragging it moves everything together
+              selectedStroke = hit;
+              selectedAnchors = [];
+            } else {
+              setSingleSelection(hit);
               selectedAnchors = [];
             }
-            // Also allow dragging the entire selected stroke smoothly
+            // Also allow dragging the entire selection (single shape or the whole group) smoothly
             draggingItem = { strokeId: hit.id, type: 'stroke', index: -1 };
             prevMouse = p.createVector(mx, my);
           } else {
             // Clicked empty space
             if (!p.keyIsDown(p.SHIFT)) {
-              selectedStroke = null;
+              setSingleSelection(null);
               selectedAnchors = [];
             }
             draggingItem = null;
@@ -1279,7 +1325,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               activeStroke.anchors = smoothed;
 
               strokes.push(activeStroke);
-              selectedStroke = activeStroke;
+              setSingleSelection(activeStroke);
               activeStroke = null;
               isDrawing = false;
               saveState();
@@ -1339,19 +1385,27 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               if (prevMouse) {
                 const dx = currentMouse.x - prevMouse.x;
                 const dy = currentMouse.y - prevMouse.y;
-                
-                if (targetStroke.anchors) {
-                  for (const anchor of targetStroke.anchors) {
-                    anchor.p.x += dx;
-                    anchor.p.y += dy;
-                    if (anchor.c1) { anchor.c1.x += dx; anchor.c1.y += dy; }
-                    if (anchor.c2) { anchor.c2.x += dx; anchor.c2.y += dy; }
+
+                // If the dragged shape is part of a multi-selection, move the whole group
+                // together; otherwise just the one shape.
+                const strokesToMove = isStrokeSelected(targetStroke.id) && selectedStrokes.length > 1
+                  ? selectedStrokes
+                  : [targetStroke];
+
+                for (const s of strokesToMove) {
+                  if (s.anchors) {
+                    for (const anchor of s.anchors) {
+                      anchor.p.x += dx;
+                      anchor.p.y += dy;
+                      if (anchor.c1) { anchor.c1.x += dx; anchor.c1.y += dy; }
+                      if (anchor.c2) { anchor.c2.x += dx; anchor.c2.y += dy; }
+                    }
                   }
-                }
-                if (targetStroke.points) {
-                  for (const pt of targetStroke.points) {
-                    pt.x += dx;
-                    pt.y += dy;
+                  if (s.points) {
+                    for (const pt of s.points) {
+                      pt.x += dx;
+                      pt.y += dy;
+                    }
                   }
                 }
                 prevMouse = currentMouse;
@@ -1521,9 +1575,10 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           // Only perform selection if the marquee box is larger than a tiny threshold (e.g., 4px) to avoid accidental clicks clearing state
           if (widthSel > 4 && heightSel > 4) {
             const newlySelected: SelectedAnchor[] = [];
-            
-            // If we already have a selectedStroke, prioritize selecting anchors within it
-            if (selectedStroke && selectedStroke.tool === 'bezier' && selectedStroke.anchors) {
+
+            // If we already have a single stroke selected, prioritize refining anchor
+            // selection within it (precise per-anchor editing of one shape)
+            if (selectedStrokes.length === 1 && selectedStroke && selectedStroke.tool === 'bezier' && selectedStroke.anchors) {
               for (let i = 0; i < selectedStroke.anchors.length; i++) {
                 const anchor = selectedStroke.anchors[i];
                 if (anchor.p.x >= x1 && anchor.p.x <= x2 && anchor.p.y >= y1 && anchor.p.y <= y2) {
@@ -1531,7 +1586,8 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
                 }
               }
             } else {
-              // Otherwise, search all strokes for anchors inside the marquee box
+              // Otherwise, a marquee over empty space selects the whole shapes it touches
+              // (not just their anchors), so they can be moved/copied/deleted as a group.
               for (const stroke of strokes) {
                 if (stroke.tool === 'bezier' && stroke.anchors) {
                   for (let i = 0; i < stroke.anchors.length; i++) {
@@ -1542,12 +1598,19 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
                   }
                 }
               }
-              // If we found anchors, let's set selectedStroke to the first found anchor's stroke
-              if (newlySelected.length > 0) {
-                const firstId = newlySelected[0].strokeId;
-                const foundStroke = strokes.find(s => s.id === firstId);
-                if (foundStroke) {
-                  selectedStroke = foundStroke;
+              const touchedIds = Array.from(new Set(newlySelected.map(ns => ns.strokeId)));
+              const touchedStrokes = touchedIds
+                .map(id => strokes.find(s => s.id === id))
+                .filter((s): s is VectorStroke => !!s);
+              if (touchedStrokes.length > 0) {
+                if (p.keyIsDown(p.SHIFT)) {
+                  for (const s of touchedStrokes) {
+                    if (!isStrokeSelected(s.id)) selectedStrokes.push(s);
+                  }
+                  selectedStroke = touchedStrokes[touchedStrokes.length - 1];
+                } else {
+                  selectedStrokes = touchedStrokes;
+                  selectedStroke = touchedStrokes[0];
                 }
               }
             }
@@ -1576,11 +1639,17 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           // stroke's anchor/handle was actually dragged.
           const wasActivePathPoint = !!activeStroke && draggingItem.strokeId === activeStroke.id;
           const draggedStrokeId = draggingItem.strokeId;
+          const wasGroupMove = draggingItem.type === 'stroke' && isStrokeSelected(draggedStrokeId) && selectedStrokes.length > 1;
           draggingItem = null;
           if (!wasActivePathPoint) {
-            // A manual drag deliberately reshaped this stroke — drop its cached Simplify/Smooth
-            // original so a later slider touch starts from this edit, not stale prior geometry.
-            originalAnchors.delete(draggedStrokeId);
+            // A manual drag deliberately reshaped this stroke (or the whole group, if moved
+            // together) — drop cached Simplify/Smooth originals so a later slider touch starts
+            // from this edit, not stale prior geometry.
+            if (wasGroupMove) {
+              for (const s of selectedStrokes) originalAnchors.delete(s.id);
+            } else {
+              originalAnchors.delete(draggedStrokeId);
+            }
             saveState(); // save after anchor dragging finishes
           }
           return;
@@ -1633,7 +1702,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               activeStroke.points = []; // clear raw coordinate array to save memory
             }
             strokes.push(activeStroke);
-            selectedStroke = activeStroke;
+            setSingleSelection(activeStroke);
             activeStroke = null;
             saveState();
           }
@@ -1678,7 +1747,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
             const smoothed = computeControlPoints(activeStroke.anchors!.map(a => a.p), activeStroke.isClosed, currentTension, activeStroke.anchors);
             activeStroke.anchors = smoothed;
             strokes.push(activeStroke);
-            selectedStroke = activeStroke;
+            setSingleSelection(activeStroke);
           }
           activeStroke = null;
           pendingAnchorRedo = [];
@@ -1689,6 +1758,16 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       };
 
       (p as any).deleteSelected = () => {
+        if (selectedStrokes.length > 1) {
+          const idsToDelete = new Set(selectedStrokes.map(s => s.id));
+          for (const id of idsToDelete) originalAnchors.delete(id);
+          strokes = strokes.filter(s => !idsToDelete.has(s.id));
+          setSingleSelection(null);
+          selectedAnchors = [];
+          saveState();
+          return;
+        }
+
         if (selectedStroke) {
           if (selectedStroke.tool === 'bezier' && selectedStroke.anchors && selectedAnchors.length > 0) {
             const targetStroke = selectedStroke;
@@ -1711,7 +1790,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               if (remainingAnchors.length <= 1) {
                 // If 1 or 0 anchors left, delete the entire stroke
                 strokes = strokes.filter(s => s.id !== targetStroke.id);
-                selectedStroke = null;
+                setSingleSelection(null);
                 selectedAnchors = [];
               } else {
                 // Update anchors
@@ -1739,10 +1818,53 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           // Fallback: delete the entire stroke if no specific anchors are highlighted
           originalAnchors.delete(selectedStroke.id);
           strokes = strokes.filter(s => s.id !== selectedStroke!.id);
-          selectedStroke = null;
+          setSingleSelection(null);
           selectedAnchors = [];
           saveState();
         }
+      };
+
+      (p as any).copySelected = () => {
+        if (selectedStrokes.length > 0) {
+          clipboard = JSON.parse(JSON.stringify(selectedStrokes));
+          pasteOffsetCount = 0;
+        }
+      };
+
+      (p as any).pasteClipboard = () => {
+        if (clipboard.length === 0) return;
+
+        // Each successive paste (without a fresh copy) steps further away from the last,
+        // so repeated Cmd+V cascades duplicates instead of stacking them all identically.
+        pasteOffsetCount++;
+        const offset = 24 * pasteOffsetCount;
+
+        const pastedStrokes: VectorStroke[] = JSON.parse(JSON.stringify(clipboard));
+        for (const pasted of pastedStrokes) {
+          pasted.id = Math.random().toString(36).substring(2, 9);
+
+          if (pasted.anchors) {
+            for (const a of pasted.anchors) {
+              a.p.x += offset;
+              a.p.y += offset;
+              if (a.c1) { a.c1.x += offset; a.c1.y += offset; }
+              if (a.c2) { a.c2.x += offset; a.c2.y += offset; }
+            }
+          }
+          if (pasted.points) {
+            for (const pt of pasted.points) {
+              pt.x += offset;
+              pt.y += offset;
+            }
+          }
+
+          strokes.push(pasted);
+        }
+
+        selectedStrokes = pastedStrokes;
+        selectedStroke = pastedStrokes[pastedStrokes.length - 1];
+        selectedAnchors = [];
+        saveState();
       };
 
       // Arc-length-aware smoothing: each point moves toward a Gaussian-weighted average of
@@ -1880,7 +2002,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       (p as any).clearCanvas = () => {
         strokes = [];
         activeStroke = null;
-        selectedStroke = null;
+        setSingleSelection(null);
         originalAnchors.clear();
         saveState();
       };
@@ -1903,7 +2025,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         if (historyIndex > 0) {
           historyIndex--;
           strokes = JSON.parse(JSON.stringify(history[historyIndex]));
-          selectedStroke = null;
+          setSingleSelection(null);
           activeStroke = null;
           // History can jump anywhere; any cached Simplify/Smooth original may no longer
           // match what's now on the canvas, so drop it all and let it re-capture fresh.
@@ -1938,7 +2060,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         if (historyIndex < history.length - 1) {
           historyIndex++;
           strokes = JSON.parse(JSON.stringify(history[historyIndex]));
-          selectedStroke = null;
+          setSingleSelection(null);
           activeStroke = null;
           originalAnchors.clear();
         }
@@ -2130,6 +2252,20 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       setDeleteTrigger(false);
     }
   }, [deleteTrigger, setDeleteTrigger]);
+
+  useEffect(() => {
+    if (copyTrigger && p5Instance.current) {
+      (p5Instance.current as any).copySelected();
+      setCopyTrigger(false);
+    }
+  }, [copyTrigger, setCopyTrigger]);
+
+  useEffect(() => {
+    if (pasteTrigger && p5Instance.current) {
+      (p5Instance.current as any).pasteClipboard();
+      setPasteTrigger(false);
+    }
+  }, [pasteTrigger, setPasteTrigger]);
 
   useEffect(() => {
     if (finishPathTrigger && p5Instance.current) {
