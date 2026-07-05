@@ -1,4 +1,4 @@
-export type DrawingTool = 'brush' | 'bezier' | 'select';
+export type DrawingTool = 'brush' | 'bezier' | 'select' | 'move';
 
 export interface StrokePoint {
   x: number;
@@ -25,6 +25,8 @@ export interface VectorStroke {
   name?: string;
   isVisible?: boolean;
   isLocked?: boolean;
+  simplifyAmount?: number; // Last-applied Simplify slider value, remembered per-stroke
+  smoothAmount?: number;   // Last-applied Smooth slider value, remembered per-stroke
 }
 
 export interface PenConfig {

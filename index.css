@@ -1,0 +1,21 @@
+/* Hide DialKit's built-in preset/copy toolbar — this app has no use for
+   saving parameter presets or copying JSON snapshots, and it read as
+   dead UI (a "Version 1" dropdown that does nothing useful here). */
+.dialkit-panel-toolbar,
+.dialkit-panel-section-toolbar {
+  display: none !important;
+}
+
+/* Put Undo and Redo (the first two root-level actions) side by side instead of
+   stacked full-width rows; everything after them keeps the normal full-width stack. */
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner > button:nth-child(1),
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner > button:nth-child(2) {
+  flex: 1 1 calc(50% - 3px);
+}
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner > *:nth-child(n+3) {
+  flex: 1 1 100%;
+}

@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Download, FileCode, Copy, Sparkles, Check, Image as ImageIcon } from 'lucide-react';
+import { X, Download, FileCode, Copy, Image as ImageIcon } from 'lucide-react';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -9,6 +9,12 @@ interface ExportModalProps {
   onDownloadSvg: () => void;
   onCopySvg: () => void;
 }
+
+const badgeClass =
+  "text-[10px] font-semibold uppercase tracking-[0.02em] px-1.5 py-0.5 rounded-[4px] bg-[var(--dial-surface-subtle)] text-[var(--dial-text-tertiary)]";
+
+const buttonClass =
+  "py-2.5 px-3 bg-[var(--dial-surface)] hover:bg-[var(--dial-surface-hover)] text-[var(--dial-text-secondary)] hover:text-[var(--dial-text-primary)] font-medium text-[13px] rounded-[var(--dial-radius)] flex items-center justify-center gap-1.5 transition-colors";
 
 export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
@@ -28,30 +34,32 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
           />
 
-          {/* Modal Container */}
+          {/* Modal Container — styled with DialKit's own theme tokens so it matches the sidebar */}
           <motion.div
             id="modal-content"
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             transition={{ type: 'spring', duration: 0.4, bounce: 0.15 }}
-            className="relative w-full max-w-md bg-white rounded-2xl border border-stone-200 overflow-hidden flex flex-col z-10 text-stone-800"
+            data-theme="system"
+            className="dialkit-root relative w-full max-w-md rounded-[14px] border border-[var(--dial-border)] bg-[var(--dial-glass-bg)] backdrop-blur-[var(--dial-backdrop-blur)] shadow-[var(--dial-shadow)] overflow-hidden flex flex-col z-10 text-[var(--dial-text-primary)]"
           >
             {/* Header */}
-            <div className="flex justify-between items-center px-6 py-4 border-b border-stone-150 bg-stone-50/50">
-              <div className="flex flex-col">
-                <h3 className="text-sm font-serif font-bold text-stone-900 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-500 animate-pulse-subtle" />
+            <div className="flex justify-between items-center px-5 py-4 border-b border-[var(--dial-border)]">
+              <div className="flex flex-col gap-0.5">
+                <h3 className="text-[15px] font-semibold text-[var(--dial-text-primary)]">
                   Export Vector Masterpiece
                 </h3>
-                <span className="text-[10px] text-stone-500 font-semibold uppercase tracking-wider">Select file format & destination</span>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-[var(--dial-text-tertiary)]">
+                  Select file format &amp; destination
+                </span>
               </div>
               <button
                 onClick={onClose}
-                className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded-lg transition-colors"
+                className="p-1.5 text-[var(--dial-text-tertiary)] hover:text-[var(--dial-text-primary)] hover:bg-[var(--dial-surface-hover)] rounded-[var(--dial-radius)] transition-colors"
                 title="Close modal"
               >
                 <X className="w-4 h-4" />
@@ -59,35 +67,35 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
 
             {/* Content Options */}
-            <div className="p-6 space-y-4">
-              <p className="text-stone-500 text-xs leading-relaxed">
+            <div className="p-5 space-y-4">
+              <p className="text-[13px] leading-relaxed text-[var(--dial-text-secondary)]">
                 Save your calligraphy with absolute fidelity. Choose SVG to preserve perfect curve control points or PNG for easy sharing.
               </p>
 
-              {/* Formats Container */}
-              <div className="space-y-3 pt-2">
+              {/* Formats */}
+              <div className="space-y-3 pt-1">
                 {/* Vector SVG Option */}
-                <div className="p-4 border border-emerald-100 rounded-xl bg-emerald-50/30 flex flex-col gap-3 hover:border-emerald-200 transition-colors">
-                  <div className="flex items-start justify-between">
+                <div className="p-4 rounded-[12px] border border-[var(--dial-border)] bg-[var(--dial-surface)] flex flex-col gap-3 hover:border-[var(--dial-border-hover)] transition-colors">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-1.5">
-                        <span className="px-1.5 py-0.5 text-[9px] font-bold text-emerald-800 bg-emerald-100 rounded uppercase">Vector</span>
-                        <h4 className="text-xs font-bold text-stone-900">Scalable Vector Graphics (.svg)</h4>
+                        <span className={badgeClass}>Vector</span>
+                        <h4 className="text-[13px] font-semibold text-[var(--dial-text-primary)]">Scalable Vector Graphics (.svg)</h4>
                       </div>
-                      <p className="text-[11px] text-stone-500 mt-1 leading-normal">
+                      <p className="text-[11px] mt-1 leading-normal text-[var(--dial-text-tertiary)]">
                         Perfect for Adobe Illustrator, Figma, or professional printing. Keeps control points editable.
                       </p>
                     </div>
-                    <FileCode className="w-5 h-5 text-emerald-600 mt-0.5" />
+                    <FileCode className="w-4 h-4 mt-0.5 shrink-0 text-[var(--dial-text-tertiary)]" />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 mt-1">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => {
                         onDownloadSvg();
                         onClose();
                       }}
-                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                      className={buttonClass}
                     >
                       <Download className="w-3.5 h-3.5" />
                       Download SVG
@@ -97,7 +105,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                         onCopySvg();
                         onClose();
                       }}
-                      className="py-2 px-3 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold text-xs rounded-lg border border-emerald-200 flex items-center justify-center gap-1.5 transition-all"
+                      className={buttonClass}
                     >
                       <Copy className="w-3.5 h-3.5" />
                       Copy SVG Code
@@ -106,18 +114,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
 
                 {/* Standard PNG Option */}
-                <div className="p-4 border border-stone-200 rounded-xl bg-stone-50/40 flex flex-col gap-3 hover:border-stone-300 transition-colors">
-                  <div className="flex items-start justify-between">
+                <div className="p-4 rounded-[12px] border border-[var(--dial-border)] bg-[var(--dial-surface)] flex flex-col gap-3 hover:border-[var(--dial-border-hover)] transition-colors">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-1.5">
-                        <span className="px-1.5 py-0.5 text-[9px] font-bold text-stone-600 bg-stone-200 rounded uppercase font-semibold">Raster</span>
-                        <h4 className="text-xs font-bold text-stone-900">High-Resolution Image (.png)</h4>
+                        <span className={badgeClass}>Raster</span>
+                        <h4 className="text-[13px] font-semibold text-[var(--dial-text-primary)]">High-Resolution Image (.png)</h4>
                       </div>
-                      <p className="text-[11px] text-stone-500 mt-1 leading-normal">
+                      <p className="text-[11px] mt-1 leading-normal text-[var(--dial-text-tertiary)]">
                         Ready to share on socials, insert in documents, or save directly to photos.
                       </p>
                     </div>
-                    <ImageIcon className="w-5 h-5 text-stone-500 mt-0.5" />
+                    <ImageIcon className="w-4 h-4 mt-0.5 shrink-0 text-[var(--dial-text-tertiary)]" />
                   </div>
 
                   <button
@@ -125,7 +133,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       onDownloadPng();
                       onClose();
                     }}
-                    className="w-full py-2 px-3 bg-stone-900 hover:bg-stone-800 text-white font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                    className={`w-full ${buttonClass}`}
                   >
                     <Download className="w-3.5 h-3.5" />
                     Download High-Res PNG
@@ -135,7 +143,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
 
             {/* Footer */}
-            <div className="px-6 py-3.5 bg-stone-50 border-t border-stone-150 flex items-center justify-between text-[10px] text-stone-400 font-mono">
+            <div
+              className="px-5 py-3 border-t border-[var(--dial-border)] flex items-center justify-between text-[10px] text-[var(--dial-text-tertiary)]"
+              style={{ fontFamily: "'Geist Mono', monospace" }}
+            >
               <span>Vector Spline Engine v1.1</span>
               <span>Perfect Bezier Precision</span>
             </div>
