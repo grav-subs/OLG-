@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { DialRoot, useDialKitController } from 'dialkit';
 import CalligraphyCanvas from './components/CalligraphyCanvas';
 import { ExportModal } from './components/ExportModal';
-import { INITIAL_CONFIG, PenConfig, DrawingTool } from './types';
+import { parseImportedSvgStrokes } from './utils/svgExporter';
+import { INITIAL_CONFIG, PenConfig, DrawingTool, VectorStroke } from './types';
 
 function App() {
   const [clearTrigger, setClearTrigger] = useState(false);
@@ -14,11 +15,24 @@ function App() {
   const [redoTrigger, setRedoTrigger] = useState(false);
   const [deleteTrigger, setDeleteTrigger] = useState(false);
   const [copyTrigger, setCopyTrigger] = useState(false);
-  const [pasteTrigger, setPasteTrigger] = useState(false);
   const [finishPathTrigger, setFinishPathTrigger] = useState(false);
   const [shapePreviewTrigger, setShapePreviewTrigger] = useState<{ simplify: number; smooth: number } | null>(null);
   const [shapeCommitTrigger, setShapeCommitTrigger] = useState(false);
   const [toggleClosedTrigger, setToggleClosedTrigger] = useState(false);
+  const [removeReferenceTrigger, setRemoveReferenceTrigger] = useState(false);
+  const [referenceImageRequest, setReferenceImageRequest] = useState<{ dataUrl: string } | null>(null);
+  const referenceFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleReferenceFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setReferenceImageRequest({ dataUrl: reader.result as string });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = ''; // reset so picking the same file again still fires onChange
+  };
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -29,6 +43,29 @@ function App() {
     }, 3500);
   };
 
+  // Re-importing an SVG this app exported: merges its embedded strokes into whatever's
+  // already on the canvas (never overwrites it) — for continuing work on a design after
+  // the canvas was cleared or the session ended.
+  const [importStrokesRequest, setImportStrokesRequest] = useState<{ strokes: VectorStroke[] } | null>(null);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseImportedSvgStrokes(reader.result as string);
+      if (!parsed) {
+        showNotification("That SVG wasn't exported from this app — nothing to import.", 'error');
+        return;
+      }
+      setImportStrokesRequest({ strokes: parsed });
+      showNotification(`Imported ${parsed.length} path${parsed.length === 1 ? '' : 's'}`, 'success');
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset so picking the same file again still fires onChange
+  };
+
   // The whole tool sidebar lives in DialKit now: tool switching, pen params,
   // canvas/ink color, and the context actions (undo/redo/clear/export/edit).
   const dial = useDialKitController('Calligraphy Studio', {
@@ -36,6 +73,7 @@ function App() {
     redo: { type: 'action' as const, label: 'Redo' },
     clear: { type: 'action' as const, label: 'Clear Canvas' },
     exportArt: { type: 'action' as const, label: 'Export...' },
+    importSvg: { type: 'action' as const, label: 'Import SVG...' },
 
     tool: {
       type: 'select' as const,
@@ -49,7 +87,14 @@ function App() {
     },
     width: [40, 5, 120, 1] as [number, number, number, number],
     cap: { type: 'select' as const, options: ['round', 'square'], default: 'round' },
-    ink: { type: 'color' as const, default: '#D79B77' },
+    ink: {
+      type: 'select' as const,
+      options: [
+        { value: '#D79B77', label: 'Terracotta' },
+        { value: '#DAB5CF', label: 'Lavender Rose' },
+      ],
+      default: '#D79B77',
+    },
     canvasBg: {
       type: 'select' as const,
       options: [
@@ -68,6 +113,13 @@ function App() {
       toggleClosed: { type: 'action' as const, label: 'Toggle Loop' },
       deleteSelected: { type: 'action' as const, label: 'Delete Selected' },
     },
+
+    reference: {
+      upload: { type: 'action' as const, label: 'Upload Image...' },
+      opacity: [50, 0, 100, 1] as [number, number, number, number],
+      locked: false,
+      remove: { type: 'action' as const, label: 'Remove Reference Image' },
+    },
   }, {
     onAction: (path) => {
       switch (path) {
@@ -75,9 +127,12 @@ function App() {
         case 'redo': setRedoTrigger(true); break;
         case 'clear': setClearTrigger(true); break;
         case 'exportArt': setIsExportModalOpen(true); break;
+        case 'importSvg': importFileInputRef.current?.click(); break;
         case 'edit.finishPath': setFinishPathTrigger(true); break;
         case 'edit.toggleClosed': setToggleClosedTrigger(true); break;
         case 'edit.deleteSelected': setDeleteTrigger(true); break;
+        case 'reference.upload': referenceFileInputRef.current?.click(); break;
+        case 'reference.remove': setRemoveReferenceTrigger(true); break;
       }
     },
   });
@@ -102,11 +157,19 @@ function App() {
   // Set right before dial.setValues() below syncs the sliders to a newly selected
   // stroke's own remembered amounts, so that programmatic sync doesn't get mistaken
   // for a user drag and re-preview/re-save history for a shape that hasn't changed.
-  const skipNextShapeSyncRef = useRef(false);
+  //
+  // This has to be a value snapshot, not a one-shot "skip next" boolean: if the sync
+  // doesn't actually change the slider values (e.g. selecting a fresh, never-touched
+  // stroke while the sliders already happen to read 0/0), this effect never re-runs at
+  // all — so a boolean flag would sit there un-consumed and silently swallow the NEXT
+  // genuine drag once dependencies did change. Comparing values instead means a stale
+  // snapshot only ever matches by (harmless) coincidence, never by leaking forward.
+  const lastSyncedShapeRef = useRef<{ simplify: number; smooth: number } | null>(null);
 
   useEffect(() => {
-    if (skipNextShapeSyncRef.current) {
-      skipNextShapeSyncRef.current = false;
+    const synced = lastSyncedShapeRef.current;
+    if (synced && synced.simplify === simplifyAmount && synced.smooth === smoothAmount) {
+      lastSyncedShapeRef.current = null;
       return;
     }
     setShapePreviewTrigger({ simplify: simplifyAmount, smooth: smoothAmount });
@@ -151,11 +214,10 @@ function App() {
         e.preventDefault();
         setCopyTrigger(true);
       }
-      // Ctrl+V / Cmd+V (Paste as a duplicate)
-      else if ((e.ctrlKey || e.metaKey) && key === 'v') {
-        e.preventDefault();
-        setPasteTrigger(true);
-      }
+      // Ctrl+V / Cmd+V is intentionally NOT handled here — preventDefault() on this keydown
+      // suppresses the browser's native `paste` event before it fires (confirmed the actual
+      // cause of paste not working). Both image-paste and stroke-duplicate-paste are handled
+      // in CalligraphyCanvas's real `paste` event listener instead.
       // Delete or Backspace to delete selected stroke
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (dial.values.tool === 'select') {
@@ -233,8 +295,6 @@ function App() {
         setDeleteTrigger={setDeleteTrigger}
         copyTrigger={copyTrigger}
         setCopyTrigger={setCopyTrigger}
-        pasteTrigger={pasteTrigger}
-        setPasteTrigger={setPasteTrigger}
         finishPathTrigger={finishPathTrigger}
         setFinishPathTrigger={setFinishPathTrigger}
         shapePreviewTrigger={shapePreviewTrigger}
@@ -244,14 +304,32 @@ function App() {
         toggleClosedTrigger={toggleClosedTrigger}
         setToggleClosedTrigger={setToggleClosedTrigger}
         onSelectedShapeParamsChange={(params) => {
-          skipNextShapeSyncRef.current = true;
-          dial.setValues({
-            edit: {
-              simplify: params ? params.simplify : 0,
-              smooth: params ? params.smooth : 0,
-            },
-          });
+          const next = { simplify: params ? params.simplify : 0, smooth: params ? params.smooth : 0 };
+          lastSyncedShapeRef.current = next;
+          dial.setValues({ edit: next });
         }}
+        referenceOpacity={dial.values.reference.opacity / 100}
+        referenceLocked={dial.values.reference.locked}
+        removeReferenceTrigger={removeReferenceTrigger}
+        setRemoveReferenceTrigger={setRemoveReferenceTrigger}
+        referenceImageRequest={referenceImageRequest}
+        importStrokesRequest={importStrokesRequest}
+      />
+
+      <input
+        ref={referenceFileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleReferenceFileChange}
+        className="hidden"
+      />
+
+      <input
+        ref={importFileInputRef}
+        type="file"
+        accept=".svg,image/svg+xml"
+        onChange={handleImportFileChange}
+        className="hidden"
       />
 
       <div className="absolute top-6 left-6 w-80 max-h-[90vh] rounded-2xl overflow-hidden shadow-xl z-10">

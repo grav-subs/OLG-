@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import p5 from 'p5';
 import { PenConfig, VectorStroke, BezierAnchor, StrokePoint } from '../types';
 import { generateSvgString } from '../utils/svgExporter';
@@ -350,8 +350,6 @@ interface CalligraphyCanvasProps {
   setDeleteTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   copyTrigger: boolean;
   setCopyTrigger: React.Dispatch<React.SetStateAction<boolean>>;
-  pasteTrigger: boolean;
-  setPasteTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   finishPathTrigger: boolean;
   setFinishPathTrigger: React.Dispatch<React.SetStateAction<boolean>>;
   shapePreviewTrigger: { simplify: number; smooth: number } | null;
@@ -362,6 +360,13 @@ interface CalligraphyCanvasProps {
   setToggleClosedTrigger?: React.Dispatch<React.SetStateAction<boolean>>;
 
   onSelectedShapeParamsChange?: (params: { simplify: number; smooth: number } | null) => void;
+
+  referenceOpacity?: number;
+  referenceLocked?: boolean;
+  removeReferenceTrigger?: boolean;
+  setRemoveReferenceTrigger?: React.Dispatch<React.SetStateAction<boolean>>;
+  referenceImageRequest?: { dataUrl: string } | null;
+  importStrokesRequest?: { strokes: VectorStroke[] } | null;
 }
 
 const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({ 
@@ -383,8 +388,6 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
   setDeleteTrigger,
   copyTrigger,
   setCopyTrigger,
-  pasteTrigger,
-  setPasteTrigger,
   finishPathTrigger,
   setFinishPathTrigger,
   shapePreviewTrigger,
@@ -393,11 +396,20 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
   setShapeCommitTrigger,
   toggleClosedTrigger,
   setToggleClosedTrigger,
-  onSelectedShapeParamsChange
+  onSelectedShapeParamsChange,
+  referenceOpacity = 0.5,
+  referenceLocked = false,
+  removeReferenceTrigger = false,
+  setRemoveReferenceTrigger,
+  referenceImageRequest,
+  importStrokesRequest
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const p5Instance = useRef<p5 | null>(null);
   const onSelectedShapeParamsChangeRef = useRef(onSelectedShapeParamsChange);
+  // setIsSpaceHeld's identity is stable across renders, so the once-mounted p5 sketch
+  // below can call it directly without needing a ref to dodge stale closures.
+  const [isSpaceHeld, setIsSpaceHeld] = useState(false);
 
   useEffect(() => {
     onSelectedShapeParamsChangeRef.current = onSelectedShapeParamsChange;
@@ -415,6 +427,17 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       let strokes: VectorStroke[] = [];
       let history: VectorStroke[][] = [[]];
       let historyIndex = 0;
+
+      // Auto-save: persists strokes to this browser only (no accounts/cloud sync — a
+      // reload on the same device recovers your work; switching devices does not).
+      const AUTOSAVE_KEY = 'digital-calligraphy-studio:strokes-v1';
+      const persistStrokes = () => {
+        try {
+          localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(strokes));
+        } catch {
+          // Storage unavailable (private browsing, quota exceeded, etc.) — not critical
+        }
+      };
 
       let activeStroke: VectorStroke | null = null;
       let selectedStroke: VectorStroke | null = null;
@@ -515,6 +538,11 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       let panStartMouse: p5.Vector | null = null;
       let panStartOffset: { x: number; y: number } | null = null;
 
+      // Holding Space temporarily activates panning regardless of the active tool (same
+      // convention as Photoshop/Figma/Illustrator) — the fix for content or a reference
+      // image ending up stuck off in a corner with no way to bring it back into view.
+      let spacePanHeld = false;
+
       // Canvas zoom. Scales the actual drawing coordinate space (via p.scale in draw()),
       // not a CSS transform on the canvas element — so strokes stay crisp vector redraws
       // at any zoom level instead of a blurred raster upscale.
@@ -535,6 +563,31 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         zoom = newZoom;
       };
 
+      // Reference/trace image (Figma-style light-table overlay) — one at a time, positioned
+      // in world space so it pans/zooms with the canvas. Lives outside the undo/redo stroke
+      // history entirely: folding a base64 image into every history snapshot would bloat
+      // each one, and there's little value undoing a move/resize of a tracing guide anyway.
+      interface ReferenceImageState {
+        img: p5.Image;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        opacity: number;
+        locked: boolean;
+      }
+      let referenceImage: ReferenceImageState | null = null;
+      let isDraggingReference = false;
+      let isResizingReference = false;
+      let referenceDragPrevMouse: StrokePoint | null = null;
+
+      const REFERENCE_HANDLE_SIZE = 14;
+
+      const getReferenceHandlePos = (ref: ReferenceImageState): StrokePoint => ({
+        x: ref.x + ref.width,
+        y: ref.y + ref.height
+      });
+
       // Pristine anchor snapshot per stroke id, shared by the Simplify and Smooth sliders.
       // Captured once (lazily) and never overwritten by either slider, so both always
       // recompute from the same untouched original — dragging either back to 0 exactly
@@ -553,6 +606,22 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
 
       p.setup = () => {
         p.createCanvas(p.windowWidth, p.windowHeight);
+
+        try {
+          const saved = localStorage.getItem(AUTOSAVE_KEY);
+          if (saved) {
+            const restored = JSON.parse(saved);
+            if (Array.isArray(restored) && restored.length > 0) {
+              strokes = restored;
+              // history[0] stays the empty canvas so Undo can still get back to a blank
+              // slate; history[1] is what was restored, and that's the current state.
+              history = [[], JSON.parse(JSON.stringify(strokes))];
+              historyIndex = 1;
+            }
+          }
+        } catch {
+          // Corrupt or unavailable storage — just start with an empty canvas
+        }
       };
 
       p.windowResized = () => {
@@ -567,6 +636,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         history.push(JSON.parse(JSON.stringify(strokes)));
         historyIndex = history.length - 1;
         pendingAnchorRedo = [];
+        persistStrokes();
       };
 
       interface SnapGuide {
@@ -767,6 +837,35 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         p.scale(zoom);
 
         const wm = getWorldMouse();
+
+        // Draw the reference/trace image behind all strokes
+        if (referenceImage) {
+          p.push();
+          p.tint(255, 255, 255, referenceImage.opacity * 255);
+          p.image(referenceImage.img, referenceImage.x, referenceImage.y, referenceImage.width, referenceImage.height);
+          p.noTint();
+          p.pop();
+
+          // Locked images show no drag/resize chrome at all — nothing to interact with
+          if (configRef.current.tool === 'select' && !referenceImage.locked) {
+            p.push();
+            p.noFill();
+            p.stroke('rgba(99, 102, 241, 0.6)');
+            p.strokeWeight(1.5 / zoom);
+            (p.drawingContext as CanvasRenderingContext2D).setLineDash([5 / zoom, 5 / zoom]);
+            p.rect(referenceImage.x, referenceImage.y, referenceImage.width, referenceImage.height);
+            (p.drawingContext as CanvasRenderingContext2D).setLineDash([]);
+            p.pop();
+
+            const handlePos = getReferenceHandlePos(referenceImage);
+            p.push();
+            p.fill('#ffffff');
+            p.stroke('#6366f1');
+            p.strokeWeight(2 / zoom);
+            p.circle(handlePos.x, handlePos.y, REFERENCE_HANDLE_SIZE / zoom);
+            p.pop();
+          }
+        }
 
         // Check hover if we are in select tool and not drawing/dragging
         if (configRef.current.tool === 'select' && !isDrawing && !draggingItem) {
@@ -1142,7 +1241,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
 
         const { tool, width, color, opacity } = configRef.current;
 
-        if (tool === 'move') {
+        if (spacePanHeld || tool === 'move') {
           isPanning = true;
           panStartMouse = p.createVector(p.mouseX, p.mouseY);
           panStartOffset = { x: panX, y: panY };
@@ -1260,6 +1359,23 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           }
         }
 
+        // Reference image: resize handle first, then its body — checked after strokes so
+        // stroke editing always takes priority over the reference sitting behind it.
+        // Locked images don't intercept clicks at all, so they can't be nudged by accident.
+        if (tool === 'select' && referenceImage && !referenceImage.locked) {
+          const handlePos = getReferenceHandlePos(referenceImage);
+          if (p.dist(mx, my, handlePos.x, handlePos.y) < REFERENCE_HANDLE_SIZE / zoom) {
+            isResizingReference = true;
+            return;
+          }
+          if (mx >= referenceImage.x && mx <= referenceImage.x + referenceImage.width &&
+              my >= referenceImage.y && my <= referenceImage.y + referenceImage.height) {
+            isDraggingReference = true;
+            referenceDragPrevMouse = { x: mx, y: my };
+            return;
+          }
+        }
+
         // --- Standard Tool Click Handling ---
         if (tool === 'select') {
           const hit = getStrokeUnderMouse(mx, my);
@@ -1368,6 +1484,24 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           panY = panStartOffset.y + (p.mouseY - panStartMouse.y);
           return;
         }
+
+        if (referenceImage && (isDraggingReference || isResizingReference)) {
+          const wm = getWorldMouse();
+          if (isResizingReference) {
+            const aspect = referenceImage.img.width / referenceImage.img.height;
+            const newWidth = Math.max(20, wm.x - referenceImage.x);
+            referenceImage.width = newWidth;
+            referenceImage.height = newWidth / aspect;
+          } else if (isDraggingReference && referenceDragPrevMouse) {
+            const dx = wm.x - referenceDragPrevMouse.x;
+            const dy = wm.y - referenceDragPrevMouse.y;
+            referenceImage.x += dx;
+            referenceImage.y += dy;
+            referenceDragPrevMouse = { x: wm.x, y: wm.y };
+          }
+          return;
+        }
+
         if (isMarqueeDragging) {
           return;
         }
@@ -1556,6 +1690,13 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           return;
         }
 
+        if (isDraggingReference || isResizingReference) {
+          isDraggingReference = false;
+          isResizingReference = false;
+          referenceDragPrevMouse = null;
+          return;
+        }
+
         // Handle Marquee Selection Completion
         if (isMarqueeDragging && marqueeStart) {
           isMarqueeDragging = false;
@@ -1683,9 +1824,13 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               // within 1.4px are pruned, resulting in a PERFECT, clean straight line.
               // At the same time, curves and circles retain their accurate organic geometry.
               const simplified = simplifyPoints(smoothedPoints, 1.4);
-              
-              let resampled = [...simplified];
-              
+
+              // Simplification leaves point spacing very uneven — dense where the hand
+              // curved, sparse where it went straight. Fitting bezier tangents on that
+              // directly is what causes the slightly bumpy/uneven look; resampling to
+              // even arc-length spacing first gives the curve fit a consistent basis.
+              let resampled = resamplePoints(simplified, 8);
+
               // If closed, ensure first and last elements match perfectly and remove duplicate end point
               if (isClosed && resampled.length > 3) {
                 resampled[resampled.length - 1] = { x: resampled[0].x, y: resampled[0].y };
@@ -1700,11 +1845,14 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
               activeStroke.isClosed = isClosed;
               activeStroke.anchors = anchors;
               activeStroke.points = []; // clear raw coordinate array to save memory
+
+              strokes.push(activeStroke);
+              setSingleSelection(activeStroke);
+              saveState();
             }
-            strokes.push(activeStroke);
-            setSingleSelection(activeStroke);
+            // Else: a stray click or barely-moved dab with too few points to be a real
+            // stroke — discard it instead of committing a stray dot to the canvas.
             activeStroke = null;
-            saveState();
           }
         }
         prevMouse = null;
@@ -1727,6 +1875,23 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           zoom = 1;
           panX = 0;
           panY = 0;
+        }
+        if (p.keyCode === 32 && !spacePanHeld) {
+          spacePanHeld = true;
+          setIsSpaceHeld(true);
+          return false; // stop the browser from scrolling the page on Space
+        }
+      };
+
+      p.keyReleased = () => {
+        if (p.keyCode === 32) {
+          spacePanHeld = false;
+          setIsSpaceHeld(false);
+          if (isPanning) {
+            isPanning = false;
+            panStartMouse = null;
+            panStartOffset = null;
+          }
         }
       };
 
@@ -1863,6 +2028,24 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
 
         selectedStrokes = pastedStrokes;
         selectedStroke = pastedStrokes[pastedStrokes.length - 1];
+        selectedAnchors = [];
+        saveState();
+      };
+
+      // Merge strokes read back out of a previously-exported SVG (see svgExporter's embedded
+      // metadata) into whatever's already on the canvas — at their original coordinates, with
+      // fresh ids so they can't collide with anything currently on the canvas.
+      (p as any).importStrokes = (imported: VectorStroke[]) => {
+        if (!imported || imported.length === 0) return;
+
+        const newStrokes: VectorStroke[] = JSON.parse(JSON.stringify(imported)).map((s: VectorStroke) => ({
+          ...s,
+          id: Math.random().toString(36).substring(2, 9)
+        }));
+
+        strokes.push(...newStrokes);
+        selectedStrokes = newStrokes;
+        selectedStroke = newStrokes[newStrokes.length - 1];
         selectedAnchors = [];
         saveState();
       };
@@ -2007,6 +2190,44 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
         saveState();
       };
 
+      // Reference/trace image — not part of undo/redo history (see the state comment above)
+      (p as any).setReferenceImageFromDataUrl = (dataUrl: string) => {
+        p.loadImage(dataUrl, (img: p5.Image) => {
+          // Default to a reasonable size centered in the current viewport, regardless of zoom
+          const maxDim = 320 / zoom;
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          const w = img.width * scale;
+          const h = img.height * scale;
+          const viewCenterX = (p.width / 2 - panX) / zoom;
+          const viewCenterY = (p.height / 2 - panY) / zoom;
+          referenceImage = {
+            img,
+            x: viewCenterX - w / 2,
+            y: viewCenterY - h / 2,
+            width: w,
+            height: h,
+            opacity: 0.5,
+            locked: false
+          };
+        });
+      };
+
+      (p as any).setReferenceOpacity = (opacity: number) => {
+        if (referenceImage) {
+          referenceImage.opacity = opacity;
+        }
+      };
+
+      (p as any).setReferenceLocked = (locked: boolean) => {
+        if (referenceImage) {
+          referenceImage.locked = locked;
+        }
+      };
+
+      (p as any).removeReferenceImage = () => {
+        referenceImage = null;
+      };
+
       (p as any).undo = () => {
         // A bezier path being placed isn't one action per click — it's not even in `strokes`
         // yet. Step back one anchor at a time instead of discarding the whole in-progress path.
@@ -2030,6 +2251,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           // History can jump anywhere; any cached Simplify/Smooth original may no longer
           // match what's now on the canvas, so drop it all and let it re-capture fresh.
           originalAnchors.clear();
+          persistStrokes();
         }
       };
 
@@ -2063,6 +2285,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
           setSingleSelection(null);
           activeStroke = null;
           originalAnchors.clear();
+          persistStrokes();
         }
       };
 
@@ -2261,13 +2484,6 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
   }, [copyTrigger, setCopyTrigger]);
 
   useEffect(() => {
-    if (pasteTrigger && p5Instance.current) {
-      (p5Instance.current as any).pasteClipboard();
-      setPasteTrigger(false);
-    }
-  }, [pasteTrigger, setPasteTrigger]);
-
-  useEffect(() => {
     if (finishPathTrigger && p5Instance.current) {
       (p5Instance.current as any).finishActivePath();
       setFinishPathTrigger(false);
@@ -2286,6 +2502,89 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
       setShapeCommitTrigger(false);
     }
   }, [shapeCommitTrigger, setShapeCommitTrigger]);
+
+  // Reference image opacity isn't part of undo/redo, so it's just watched directly —
+  // no debounce/commit dance needed, unlike Simplify/Smooth.
+  useEffect(() => {
+    if (p5Instance.current) {
+      (p5Instance.current as any).setReferenceOpacity(referenceOpacity);
+    }
+  }, [referenceOpacity]);
+
+  useEffect(() => {
+    if (p5Instance.current) {
+      (p5Instance.current as any).setReferenceLocked(referenceLocked);
+    }
+  }, [referenceLocked]);
+
+  useEffect(() => {
+    if (removeReferenceTrigger && p5Instance.current && setRemoveReferenceTrigger) {
+      (p5Instance.current as any).removeReferenceImage();
+      setRemoveReferenceTrigger(false);
+    }
+  }, [removeReferenceTrigger, setRemoveReferenceTrigger]);
+
+  // Upload button path (App.tsx creates a fresh object each time, even for the same file,
+  // so re-uploading the same image still retriggers this)
+  useEffect(() => {
+    if (referenceImageRequest && p5Instance.current) {
+      (p5Instance.current as any).setReferenceImageFromDataUrl(referenceImageRequest.dataUrl);
+    }
+  }, [referenceImageRequest]);
+
+  useEffect(() => {
+    if (importStrokesRequest && p5Instance.current) {
+      (p5Instance.current as any).importStrokes(importStrokesRequest.strokes);
+    }
+  }, [importStrokesRequest]);
+
+  // Handles Cmd/Ctrl+V via the browser's real `paste` event rather than intercepting the
+  // keydown — calling preventDefault() on the keydown itself suppresses this event before
+  // it ever fires, which is what silently broke pasting entirely. If the clipboard holds an
+  // image, it becomes the reference/trace image; otherwise it falls back to duplicating the
+  // last-copied stroke.
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (!file) continue;
+            e.preventDefault();
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = reader.result as string;
+              if (p5Instance.current) {
+                (p5Instance.current as any).setReferenceImageFromDataUrl(dataUrl);
+              }
+            };
+            reader.readAsDataURL(file);
+            return;
+          }
+        }
+      }
+
+      e.preventDefault();
+      if (p5Instance.current) {
+        (p5Instance.current as any).pasteClipboard();
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, []);
 
   useEffect(() => {
     if (toggleClosedTrigger && p5Instance.current && setToggleClosedTrigger) {
@@ -2309,7 +2608,7 @@ const CalligraphyCanvas: React.FC<CalligraphyCanvasProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`absolute inset-0 z-0 touch-none ${config.tool === 'move' ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      className={`absolute inset-0 z-0 touch-none ${config.tool === 'move' || isSpaceHeld ? 'cursor-grab active:cursor-grabbing' : ''}`}
     />
   );
 };

@@ -107,18 +107,57 @@ export function generateSvgString(strokes: VectorStroke[], width: number, height
     : `  <!-- Background matches Calligraphy Studio canvas theme -->
   <rect width="100%" height="100%" fill="${bgColor}" />`;
 
+  // Embed the original stroke data (anchors, control points, per-stroke Simplify/Smooth
+  // memory — everything) so this exact file can be re-imported later as live editable
+  // strokes, not just re-traced from its visual outline. Invisible to any normal SVG
+  // viewer/editor; base64-encoded so it can sit as plain text with no XML-escaping
+  // concerns (no risk of stray "]]>"-in-a-stroke-name breaking a CDATA section, etc).
+  const metadataPayload = JSON.stringify({ app: 'digital-calligraphy-studio', version: 1, strokes });
+  const metadataBase64 = btoa(unescape(encodeURIComponent(metadataPayload)));
+  const metadataElement = `  <metadata id="digital-calligraphy-studio-data">${metadataBase64}</metadata>`;
+
   // Generate complete standalone SVG content
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg 
-  xmlns="http://www.w3.org/2000/svg" 
-  viewBox="0 0 ${width} ${height}" 
-  width="${width}" 
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 ${width} ${height}"
+  width="${width}"
   height="${height}"
 >
+${metadataElement}
 ${backgroundElement}
-  
+
   <g>
 ${paths.join('\n')}
   </g>
 </svg>`;
+}
+
+/**
+ * Extracts the original stroke data embedded by generateSvgString, for re-importing an
+ * exported file as live editable strokes. Returns null if the file wasn't exported from
+ * this app (no embedded metadata found, or it doesn't parse as expected).
+ */
+export function parseImportedSvgStrokes(svgText: string): VectorStroke[] | null {
+  try {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    if (doc.querySelector('parsererror')) return null;
+
+    // getElementById is unreliable on XML documents (which is what DOMParser produces for
+    // 'image/svg+xml') — it doesn't consistently recognize a plain id="..." attribute as an
+    // actual ID outside HTML documents. An attribute selector matches the literal value
+    // regardless, so it works consistently here.
+    const metadataEl = doc.querySelector('[id="digital-calligraphy-studio-data"]');
+    const base64 = metadataEl?.textContent?.trim();
+    if (!base64) return null;
+
+    const json = decodeURIComponent(escape(atob(base64)));
+    const payload = JSON.parse(json);
+    if (payload?.app !== 'digital-calligraphy-studio' || !Array.isArray(payload.strokes)) {
+      return null;
+    }
+    return payload.strokes as VectorStroke[];
+  } catch {
+    return null;
+  }
 }
